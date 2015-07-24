@@ -13,8 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 import glance_store
+from io import BytesIO
 from oslo_log import log as logging
 from oslo_utils import excutils
+import tarfile
 import webob.exc
 
 import glance.api.policy
@@ -26,6 +28,10 @@ import glance.gateway
 from glance import i18n
 import glance.notifier
 
+try:
+    import xml.etree.cElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
 
 LOG = logging.getLogger(__name__)
 _ = i18n._
@@ -33,6 +39,68 @@ _LE = i18n._LE
 
 
 class ImageDataController(object):
+
+    class OVAImageExtractor(object):
+        """
+        A class that extracts the disk image and ovf file from an OVA
+        tarball. Parses the OVF file for metadata of interest.
+        Allows upload of disk image to Glance with included metadata.
+        """
+        def __init__(self):
+            # TODO read below from CONF
+            self.interested_properties = ['Info']
+            self._valid_disk_formats = ['.aki', '.ari', '.ami', '.raw', '.iso',
+                                        '.vhd', '.vdi', '.qcow2', '.vmdk']
+
+        def extract(self, ova):
+            """
+            Extracts disk image and ovf from ova file and calls ovf parser
+
+            :param ova: a file object containing the ova file
+            :returns: a tuple of extracted disk file object and dictionary of
+                      properties parsed from the ovf file
+            """
+            with tarfile.open(fileobj=ova) as tar_file:
+                disk_name, properties = None, None
+                filenames = tar_file.getnames()
+
+                ovf_filename = next((filename for filename in filenames if '.ovf' in
+                                    filename), None)
+                if ovf_filename:
+                    ovf = tar_file.extractfile(ovf_filename)
+                    properties = self._parse_OVF(ovf)
+                    ovf.close()
+
+                for filename in filenames:
+                    if any(disk_format in filename for disk_format in
+                           self._valid_disk_formats):
+                        disk_name = filename
+
+                disk = tar_file.extractfile(disk_name)
+                if not disk:
+                    msg = _('Could not find valid disk image in OVA package')
+                    LOG.error(msg)
+                return (disk, properties)
+
+        def _parse_OVF(self, ovf):
+            """
+            Parses the OVF file
+
+            Qualified namespaces are removed from the included properties.
+
+            :param ovf: a file object containing the ovf file
+            :returns: a dictionary of properties
+            """
+            properties = {}
+            for event, elem in ET.iterparse(ovf):
+                if event == 'end':
+                    tag = elem.tag.split('}', 1)[1] if '}' in elem.tag else elem.tag
+                    if tag in self.interested_properties:
+                        properties[tag] = elem.text.strip() if elem.text else ''
+                    elem.clear()
+            return properties
+
+
     def __init__(self, db_api=None, store_api=None,
                  policy_enforcer=None, notifier=None,
                  gateway=None):
@@ -69,6 +137,18 @@ class ImageDataController(object):
         try:
             image = image_repo.get(image_id)
             image.status = 'saving'
+
+            if image.container_format == u'ova':
+                ova = data.read()
+                extractor = self.OVAImageExtractor()
+                disk, properties = extractor.extract(BytesIO(ova))
+                image.extra_properties.update(properties)
+                if disk:
+                    data = disk # Set new data
+                    disk.seek(0, 2)
+                    size = disk.tell() # Set new data size
+                    disk.seek(0)
+
             try:
                 image_repo.save(image)
                 image.set_data(data, size)
