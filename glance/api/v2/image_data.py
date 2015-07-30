@@ -14,6 +14,7 @@
 #    under the License.
 import glance_store
 from io import BytesIO
+from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
 import tarfile
@@ -37,6 +38,10 @@ LOG = logging.getLogger(__name__)
 _ = i18n._
 _LE = i18n._LE
 
+CONF = cfg.CONF
+CONF.import_opt('disk_formats', 'glance.common.config', group='image_format')
+CONF.import_opt('ovf_metadata_properties', 'glance.common.config')
+
 
 class ImageDataController(object):
 
@@ -47,10 +52,9 @@ class ImageDataController(object):
         Allows upload of disk image to Glance with included metadata.
         """
         def __init__(self):
-            # TODO read below from CONF
-            self.interested_properties = ['Info']
-            self._valid_disk_formats = ['.aki', '.ari', '.ami', '.raw', '.iso',
-                                        '.vhd', '.vdi', '.qcow2', '.vmdk']
+            self.interested_properties = CONF.ovf_metadata_properties
+            if not self.interested_properties:
+                LOG.warn(_('Interested OVF metadata was not specified'))
 
         def extract(self, ova):
             """
@@ -73,7 +77,7 @@ class ImageDataController(object):
 
                 for filename in filenames:
                     if any(disk_format in filename for disk_format in
-                           self._valid_disk_formats):
+                           CONF.image_format.disk_formats):
                         disk_name = filename
 
                 disk = tar_file.extractfile(disk_name)

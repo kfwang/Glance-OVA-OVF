@@ -173,6 +173,10 @@ common_opts = [
                       'digest-algorithms" to get the available algorithms'
                       'supported by the version of OpenSSL on the platform.'
                       ' Examples are "sha1", "sha256", "sha512", etc.')),
+    cfg.ListOpt('ovf_metadata_properties',
+                default=[],
+                help=_('Specifies which interested metadata should be '
+                       'extracted from an uploaded ovf file')),
 ]
 
 CONF = cfg.CONF
